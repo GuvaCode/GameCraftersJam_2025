@@ -7,16 +7,16 @@ unit ScreenSpace;
 interface
 
 uses
-  RayLib, RayMath, Classes, SysUtils, ScreenManager, SpaceEngine,DigestMath, r3d, Math;
-
-
+  RayLib, RayMath, Classes, SysUtils, ScreenManager, SpaceEngine, DigestMath, r3d, Math;
 
 { TSpaceShip }
 type
   TSpaceShip = class(TSpaceActor)
   private
+    FEnergy: Integer;
+    FNumMatEngine: Integer;
     FShotColor: TColorB;
-    ShipModel: TR3D_Model;
+
     FLastFireTime: Single;
     FFireRate: Single;
     FHitEffectTimer: Single;
@@ -31,7 +31,12 @@ type
     FHitParticleMaterial: TR3D_Material;
     FHitScaleCurve: TR3D_InterpolationCurve;
 
+    FIsDying: Boolean;           // Флаг процесса уничтожения
+    FDeathTimer: Single;         // Таймер смерти
+    FDeathDuration: Single;      // Продолжительность эффекта смерти
+
   public
+
     constructor Create(const AParent: TSpaceEngine); override;
     destructor Destroy; override;
     procedure Update(const DeltaTime: Single); override;
@@ -41,7 +46,13 @@ type
     procedure ApplyHit(HitPos, HitNorm: TVector3; Damage: Single);
     procedure EmitHitParticles(HitPos, HitNorm: TVector3);
 
-    property ShotColor: TColorB read  FShotColor write FShotColor;
+    procedure StartDeathSequence;
+    procedure UpdateDeathEffects(DeltaTime: Single);
+
+    property ShotColor: TColorB read FShotColor write FShotColor;
+    property NumMatEngine: Integer read FNumMatEngine write FNumMatEngine;
+
+    property Energy: Integer read FEnergy write FEnergy;
   end;
 
 
@@ -49,7 +60,7 @@ type
 
   TAiShip = class(TSpaceShip)
   private
-   // ShipModel: TR3D_Model;
+
     FOrbitRadius: Single;
     FOrbitHeight: Single;
     FOrbitSpeed: Single;
@@ -57,8 +68,7 @@ type
     FTargetOrbitHeight: Single;
     FOrbitChangeTimer: Single;
     FTargetOrbitRadius: Single;
-    //FLastFireTime: Single;
-    //FFireRate: Single;
+
     FFireRange: Single;
     function CalculateRollInput(CurrentUp, TargetUp: TVector3): Single;
     function CalculatePitchInput(CurrentForward, TargetDirection: TVector3): Single;
@@ -66,7 +76,7 @@ type
   public
     constructor Create(const AParent: TSpaceEngine); override;
     procedure Update(const DeltaTime: Single); override;
-    //procedure Shot; override;
+
   end;
 
   { TProjectile }
@@ -89,8 +99,9 @@ type
   TScreenSpace = class(TGameScreen)
   private
     Engine: TSpaceEngine;
+    ShipModel:  array[0..5] of TR3D_Model;
     Ship: TSpaceShip;
-    AiShip: array[0..13] of TAiShip;
+    AiShip: array[0..5] of TAiShip;
     Gate: TSpaceGate;
     Camera: TSpaceCamera;
 
@@ -103,7 +114,7 @@ type
     procedure Hide; override; // Celled when the screen is hidden
   end;
 
-var Material: TR3D_Material;
+
 
 
 implementation
@@ -112,10 +123,10 @@ constructor TSpaceShip.Create(const AParent: TSpaceEngine);
 begin
   inherited Create(AParent);
   R3D_SetModelImportScale(0.1);
-  ShipModel := R3D_LoadModel(('data' + '/models/test.glb'));
+
 
   ColliderType:= ctBox;
-  ActorModel := ShipModel;
+  ActorModel := Default(TR3D_Model);
   DoCollision := True;
   AlignToHorizon:=False;
   MaxSpeed:=20;
@@ -148,8 +159,8 @@ begin
   FHitParticleSystem := R3D_LoadParticleSystem(512);
 
   // Настраиваем систему частиц
-  FHitParticleSystem.initialColor := Green;///ColorCreate(255, 100, 0, 255);
-  FHitParticleSystem.colorVariance := BLUE;//ColorCreate(50, 30, 0, 50);
+  FHitParticleSystem.initialColor := Green;
+  FHitParticleSystem.colorVariance := BLUE;
   FHitParticleSystem.initialScale := Vector3Create(0.1, 0.1, 0.1);
   FHitParticleSystem.scaleVariance := 0.05;
   FHitParticleSystem.lifetime := 1.5;
@@ -166,6 +177,14 @@ begin
   R3D_CalculateParticleSystemBoundingBox(@FHitParticleSystem);
   TrailColor := BLUE;
   ShotColor := BLUE;
+
+  FEnergy := 100;
+
+  // Инициализация эффекта смерти
+  FIsDying := False;
+  FDeathTimer := 0;
+  FDeathDuration := 2.0; // 2 секунды на эффект смерти
+
 end;
 
 destructor TSpaceShip.Destroy;
@@ -181,6 +200,13 @@ end;
 
 procedure TSpaceShip.Update(const DeltaTime: Single);
 begin
+  if FIsDying then
+  begin
+    UpdateDeathEffects(DeltaTime);
+    // Не вызываем inherited Update, чтобы корабль не двигался во время смерти
+    Exit;
+  end;
+
   inherited Update(DeltaTime);
 
   // Обновляем таймер эффекта попадания
@@ -196,6 +222,8 @@ begin
 
   // Обновляем систему частиц
   R3D_UpdateParticleSystem(@FHitParticleSystem, DeltaTime);
+  if ActorModel.materialCount > 0 then
+  begin
 
   // Визуальные эффекты двигателя с учетом попадания
   if FIsHit then
@@ -203,21 +231,23 @@ begin
     // Мигающий эффект при попадании
     if Trunc(FHitEffectTimer * 8) mod 2 = 0 then
     begin
-      ActorModel.materials[1].emission.color := ColorCreate(255, 50, 0, 255);
-      ActorModel.materials[1].emission.energy := 400.0;
+      ActorModel.materials[FNumMatEngine].emission.color := ColorCreate(255, 50, 0, 255);
+      ActorModel.materials[FNumMatEngine].emission.energy := 400.0;
     end
     else
     begin
-      ActorModel.materials[1].emission.color := TrailColor;
-      ActorModel.materials[1].emission.energy := Clamp(Abs(Self.CurrentSpeed)/MaxSpeed * 300.0, 30.0, 300.0);
+      ActorModel.materials[FNumMatEngine].emission.color := TrailColor;
+      ActorModel.materials[FNumMatEngine].emission.energy := Clamp(Abs(Self.CurrentSpeed)/MaxSpeed * 300.0, 30.0, 300.0);
     end;
   end
   else
   begin
-    ActorModel.materials[1].emission.color := TrailColor;
-    ActorModel.materials[1].emission.energy := Clamp(Abs(Self.CurrentSpeed)/MaxSpeed * 300.0, 30.0, 300.0);
+    ActorModel.materials[FNumMatEngine].emission.color := TrailColor;
+    ActorModel.materials[FNumMatEngine].emission.energy := Clamp(Abs(Self.CurrentSpeed)/MaxSpeed * 300.0, 30.0, 300.0);
   end;
-  ActorModel.materials[1].albedo.color := BLACK;
+  ActorModel.materials[FNumMatEngine].albedo.color := BLACK;
+
+  end;
 end;
 
 procedure TSpaceShip.Shot;
@@ -256,6 +286,14 @@ begin
 
     // Наносим урон
     Damage := Actor.Tag;
+    Energy := Energy - Trunc(Damage);
+   // If Energy <= 0 then FIsDying := True;
+      // Проверяем условие смерти
+    if (FEnergy <= 0) and not IsDead then
+    begin
+       StartDeathSequence;
+    end;
+
     LazerColor :=  TImpulseLazer(Actor).TrailColor;
     //FHitParticleSystem.initialColor := TImpulseLazer(Actor).TrailColor;
     //FHitParticleSystem.colorVariance :=TImpulseLazer(Actor).TrailColor;
@@ -272,11 +310,8 @@ begin
       Byte(Round(Clamp(LazerColor.a + 30, 0, 255)))
     );
 
-
-
     ApplyHit(HitPos, HitNorm, Damage);
-
-    // Уничтожаем снаряд
+   // Уничтожаем снаряд
     Actor.Dead;
   end;
 end;
@@ -320,21 +355,69 @@ begin
   begin
     R3D_EmitParticle(@FHitParticleSystem);
   end;
+end;
 
-{
-   // Устанавливаем позицию системы частиц
-  FHitParticleSystem.position := HitPos;
+procedure TSpaceShip.StartDeathSequence;
+begin
+  if FIsDying or IsDead then Exit;
 
- // Базовое направление скорости
-  baseVelocity := Vector3Scale(HitNorm, 3.0);
-  FHitParticleSystem.initialVelocity := baseVelocity;
-  FHitParticleSystem.velocityVariance := Vector3Create(1.5, 1.5, 1.5);
+  FIsDying := True;
+  FDeathTimer := FDeathDuration;
 
-  // Эмитируем частицы вручную
-  for i := 0 to 14*4 do
+
+  // Начальные значения для эффекта
+  if ActorModel.materialCount > 0 then
   begin
-    R3D_EmitParticle(@FHitParticleSystem);
-  end; }
+    ActorModel.materials[0].emission.energy := 300.0; // Яркое свечение в начале
+    ActorModel.materials[0].emission.color := RED;    // Красное свечение смерти
+  end;
+
+  // НЕ вызываем inherited Dead здесь - только после завершения анимации
+  // inherited Dead;
+end;
+
+procedure TSpaceShip.UpdateDeathEffects(DeltaTime: Single);
+var
+  fadeFactor: Single;
+begin
+  if not FIsDying then Exit;
+
+  FDeathTimer := FDeathTimer - DeltaTime;
+
+  // Вычисляем коэффициент затухания (от 1.0 до 0.0)
+  fadeFactor := FDeathTimer / FDeathDuration;
+
+  // Плавно уменьшаем свечение материала
+  if ActorModel.materialCount > 0 then
+  begin
+    ActorModel.materials[0].emission.energy := 300.0 * fadeFactor;
+
+    // Меняем цвет от красного к оранжевому при затухании
+    if fadeFactor > 0.5 then
+      ActorModel.materials[0].emission.color := RED
+    else
+      ActorModel.materials[0].emission.color := ColorCreate(255, 100, 0, 255);
+  end;
+
+  // Также уменьшаем масштаб для эффекта исчезновения
+  Scale := Scale * (0.99 - (DeltaTime * 0.5));
+
+  // Добавляем случайное вращение при смерти
+  RotateLocalEuler(Vector3Create(
+    Random * 10 - 5,
+    Random * 10 - 5,
+    Random * 10 - 5
+  ), DeltaTime * 90);
+
+  // Завершаем эффект смерти
+  if FDeathTimer <= 0 then
+  begin
+    FIsDying := False;
+    // Полностью скрываем объект
+    Visible := False;
+    // ТОЛЬКО ТЕПЕРЬ помечаем как мертвый
+    inherited Dead;
+  end;
 end;
 
 procedure TSpaceShip.Render;
@@ -390,16 +473,14 @@ end;
 
 constructor TAiShip.Create(const AParent: TSpaceEngine);
 begin
-  inherited Create(AParent);
+  inherited Create(AParent);//, FileName);
   R3D_SetModelImportScale(0.1);
 
-
-  //ShipModel := R3D_LoadModel(('data' + '/models/ship.glb'));
-  ShipModel := R3D_LoadModel(('data' + '/models/test.glb'));
   ColliderType:= ctBox;
-  ActorModel := ShipModel;
+
   DoCollision := True;
   AlignToHorizon:=False;
+
   MaxSpeed:=2;
   ShipType := Pirate;
   TrailColor := RED;
@@ -432,17 +513,10 @@ var
   IsMediumCloseToPlayer: Boolean;
 
   // Новые переменные для плавного управления
-//  TargetRotation: TQuaternion;
-//  RotationDiff: TVector3;
   SmoothFactor: Single;
 
 begin
   inherited Update(DeltaTime);
-
-  // Визуальные эффекты двигателя
- // ActorModel.materials[1].emission.color := RED;
-//  ActorModel.materials[1].emission.energy := Clamp(Abs(Self.CurrentSpeed)/MaxSpeed * 300.0, 30.0, 300.0);
-//  ActorModel.materials[1].albedo.color := BLACK;
 
   // Инициализация параметров орбиты при первом вызове
   if FOrbitRadius = 0 then
@@ -647,23 +721,9 @@ begin
 end;
 
 
- {
-procedure TAiShip.Shot;
-var
-  CurrentTime: Single;
-  StartPos: TVector3;
-begin
-  CurrentTime := GetTime();
 
-  if (CurrentTime - FLastFireTime) < (0.5 / FFireRate) then
-    Exit;
 
-  FLastFireTime := CurrentTime;
 
-  StartPos := Vector3Add(Position, Vector3Scale(GetForward(), 0.1));
-  TImpulseLazer.Create(Engine, StartPos, GetForward(), 100.0, 25.0, TrailColor);
-end;
-  }
 
 
 
@@ -742,6 +802,8 @@ begin
   Engine.CrosshairFar.Create('data' + '/models/UI/crosshair2.gltf');
   Engine.CrosshairNear.Create('data' + '/models/UI/crosshair.gltf');
   Engine.LoadSkyBox('data' +'/skybox/planets/earthlike_planet_close.hdr', SQHigh, STPanorama);
+
+
   Engine.EnableSkybox;
   Engine.Light[0] := R3D_CreateLight(R3D_LIGHT_DIR);
 
@@ -750,21 +812,33 @@ begin
   R3D_EnableShadow(Engine.Light[0], 4096);
 
   R3D_SetModelImportScale(1.1);
-
+  R3D_SetBrightness(3);
 
 
   Camera := TSpaceCamera.Create(True, 50);
 
-  Ship := TSpaceShip.Create(Engine);
-  Gate := TSpaceGate.Create(Engine);
-
   for i := 0 to 5 do
   begin
-    AiShip[i] := TAiShip.Create(Engine);
+    R3D_SetModelImportScale(0.1);
+    ShipModel[i] := R3D_LoadModel('data/models/test.glb');
+  end;
+
+  Ship := TSpaceShip.Create(Engine); //, 'data/models/test.glb');
+  Ship.ActorModel := ShipModel[5];
+  Ship.NumMatEngine:=1;
+  Ship.Energy:=100000;
+  Gate := TSpaceGate.Create(Engine);
+
+  for i := 0 to 4 do
+  begin
+    AiShip[i] := TAiShip.Create(Engine);//, ('data/models/test.glb'));
+    AiShip[i].ActorModel := ShipModel[i];
     AiShip[i].MaxSpeed:= GetRandomValue(5,15);
     AiShip[i].Position := VEctor3Create(GetRandomValue(-100,100), GetRandomValue(-100,100),GetRandomValue(-100,100));
-     AiShip[i].TrailColor := RED;
-      AiShip[i].ShotColor := GREEN;
+    AiShip[i].TrailColor := RED;
+    AiShip[i].ShotColor := GREEN;
+    AiShip[i].NumMatEngine := 1;
+    AiShip[i].Energy:=100;
   end;
 
 
@@ -786,8 +860,22 @@ begin
 end;
 
 procedure TScreenSpace.Update(MoveCount: Single);
-
+var
+  i: Integer;
 begin
+
+  // Проверяем уничтоженные и невидимые объекты
+  for i := Engine.Count - 1 downto 0 do
+  begin
+    if (Engine.Items[i].IsDead) or
+       (not Engine.Items[i].Visible) then
+    begin
+      Engine.Items[i].Free;
+    end;
+  end;
+
+
+
   Engine.Update(MoveCount, Ship.Position);
 
   Engine.ClearDeadActor;

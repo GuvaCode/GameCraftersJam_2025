@@ -261,7 +261,7 @@ type
      property OriginalPosition: TVector3 read FOriginalPosition write FOriginalPosition;
 
    published
-     property IsDead: Boolean read FIsDead;
+     property IsDead: Boolean read FIsDead write FIsDead;
      property Visible: Boolean read FVisible write FVisible;
      property Tag: Integer read FTag write FTag;
      property Scale: Single read FScale write SetScale;
@@ -291,6 +291,7 @@ type
      public
        constructor Create(const AParent: TSpaceEngine; const StartPosition, Direction: TVector3;
                          Speed, Damage: Single; ProjColor: TColorB); reintroduce;
+
        procedure Update(const DeltaTime: Single); override;
        procedure Render; override;
        property LifeTime: Single read FLifeTime;
@@ -724,7 +725,7 @@ end;
 // Проверка столкновений между всеми акторами
 procedure TSpaceEngine.Collision;
 var
-  i, j: Integer;
+  i, j: Integer; dist: single;
 begin
   // Сначала фиксируем позиции всех статических объектов
   for i := 0 to FActorList.Count - 1 do
@@ -960,6 +961,7 @@ end;
 // Создание актора с привязкой к движку
 constructor TSpaceActor.Create(const AParent: TSpaceEngine);
 begin
+
   FEngine := AParent;
   FIsDead := False;
   FVisible := True;
@@ -989,9 +991,14 @@ begin
   Engine.Remove(Self);
   Engine.FDeadActorList.Remove(Self);
 
-  // Выгрузка модели, если она была загружена
- // if @FModel <> nil then
- // R3D_UnloadModel(@FModel, True);
+  // Выгрузка модели только для акторов, которые имеют уникальные модели
+  // Не выгружаем для лазеров, так как они используют общие меши/материалы
+  if (@FModel <> nil) and
+     (Self.ClassType <> TImpulseLazer) and
+     (FModel.meshCount > 0) then
+  begin
+   // R3D_UnloadModel(@FModel, True);
+  end;
 
   inherited Destroy;
 end;
@@ -1413,7 +1420,7 @@ begin
   AlignToHorizon := False;
 
   FShotMesh := R3D_GenMeshSphere(0.5, 8, 8, True);
-  FModel.meshes := @FShotMesh;
+ // FModel.meshes := @FShotMesh;
   FMaterial := R3D_GetDefaultMaterial();
   FMaterial.emission.color := ProjColor;
   FMaterial.emission.energy := 160.0;
@@ -1422,8 +1429,10 @@ begin
 
   ColliderType := ctBox;
 
-  Self.FCollider.Radius:=1;
+//  Self.FCollider.Radius:=1;
 
+  FCollider := CreateCollider(Vector3Scale(FShotMesh.aabb.min, FScale),
+                              Vector3Scale(FShotMesh.aabb.max, FScale));
 end;
 
 procedure TImpulseLazer.Update(const DeltaTime: Single);
