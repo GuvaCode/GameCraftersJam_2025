@@ -1,19 +1,19 @@
 unit ScreenSpace;
 
 {$mode ObjFPC}{$H+}
-{.$define DEBUG}
+{$define DEBUG}
 
 
 interface
 
 uses
-  RayLib, RayMath, Classes, SysUtils, ScreenManager, SpaceEngine, DigestMath, r3d, Math;
+  RayLib, RayMath, Classes, SysUtils, Collider, ScreenManager, SpaceEngine, DigestMath, r3d, Math;
 
 { TSpaceShip }
 type
   TSpaceShip = class(TSpaceActor)
   private
-    FEnergy: Integer;
+
     FNumMatEngine: Integer;
     FShotColor: TColorB;
 
@@ -36,7 +36,6 @@ type
     FDeathDuration: Single;      // Продолжительность эффекта смерти
 
   public
-
     constructor Create(const AParent: TSpaceEngine); override;
     destructor Destroy; override;
     procedure Update(const DeltaTime: Single); override;
@@ -51,58 +50,110 @@ type
 
     property ShotColor: TColorB read FShotColor write FShotColor;
     property NumMatEngine: Integer read FNumMatEngine write FNumMatEngine;
-
-    property Energy: Integer read FEnergy write FEnergy;
   end;
 
 
-  { TAiShip }
+    { TPlanet }
+    TPlanet = class(TSpaceActor)
+    private
+      FBloom: Boolean;
+      FBloomBlink: Boolean;
+      FBloomColor: TColorB;
+      FBloomEnergy: Single;
+      FBloomMatIndex: Integer;
+      FBlooom: Boolean;
+     // Ring: TSpaceActor;  // todo
+    //  BodyModel, RingModel: TR3D_Model;
+    public
+      constructor Create(const AParent: TSpaceEngine); override;
+      procedure Update(const DeltaTime: Single); override;
+      property Bloom: Boolean read FBlooom write FBloom;
+      property BloomColor: TColorB read FBloomColor write FBloomColor;
+      property BloomMatIndex: Integer read FBloomMatIndex write FBloomMatIndex;
+      property BloomBlink: Boolean read FBloomBlink write FBloomBlink;
+      property BloomEnergy: Single read FBloomEnergy write FBloomEnergy;
+    end;
 
-  TAiShip = class(TSpaceShip)
-  private
-
+  { TBaseAiShip }
+  TBaseAiShip = class(TSpaceShip)
+  protected
     FOrbitRadius: Single;
     FOrbitHeight: Single;
     FOrbitSpeed: Single;
     FOrbitAngleChangeTimer: Single;
     FTargetOrbitHeight: Single;
-    FOrbitChangeTimer: Single;
     FTargetOrbitRadius: Single;
+    FCurrentPlanet: TPlanet;
 
-    FFireRange: Single;
+    function FindNearestPlanet: TPlanet;
     function CalculateRollInput(CurrentUp, TargetUp: TVector3): Single;
     function CalculatePitchInput(CurrentForward, TargetDirection: TVector3): Single;
     function CalculateYawInput(CurrentForward, TargetDirection: TVector3): Single;
+    function IsFacingTarget(TargetPos: TVector3; MaxAngleDegrees: Single): Boolean;
+    procedure UpdateOrbitalBehavior(DeltaTime: Single);
+
   public
     constructor Create(const AParent: TSpaceEngine); override;
     procedure Update(const DeltaTime: Single); override;
-
   end;
 
-  { TProjectile }
 
-
-
-  { TSpaceGate }
-  TSpaceGate = class(TSpaceActor)
+  { TNeutralTraderShip }
+  TNeutralTraderShip = class(TBaseAiShip)
   private
-    Ring: TSpaceActor;
-    BodyModel, RingModel: TR3D_Model;
+    FDestinationPlanet: TPlanet;
+    FTravelTimer: Single;
+    FState: (tsOrbiting, tsTraveling);
+    FOrbitTime: Single;
+    FMaxOrbitTime: Single;
+
+    procedure FindDestinationPlanet;
+    procedure UpdateOrbitingBehavior(DeltaTime: Single);
+    procedure UpdateTravelingBehavior(DeltaTime: Single);
+
   public
     constructor Create(const AParent: TSpaceEngine); override;
     procedure Update(const DeltaTime: Single); override;
   end;
 
+  { TPirateShip }
+  TPirateState = (psPatrolling, psChasing, psAttacking, psEvading);
+
+  TPirateShip = class(TBaseAiShip)
+  private
+    FDetectionRange: Single;
+    FAttackRange: Single;
+    FEvadeRange: Single;
+    FTarget: TSpaceActor;
+    FState: TPirateState;//(psPatrolling, psChasing, psAttacking, psEvading);
+    FStateTimer: Single;
+    FMaxPatrolTime: Single;
+
+    procedure FindTarget;
+    procedure UpdatePatrollingBehavior(DeltaTime: Single);
+    procedure UpdateChasingBehavior(DeltaTime: Single);
+    procedure UpdateAttackingBehavior(DeltaTime: Single);
+    procedure UpdateEvadingBehavior(DeltaTime: Single);
+    procedure ChangeState(NewState: TPirateState);//(psPatrolling, psChasing, psAttacking, psEvading));
+
+  public
+    constructor Create(const AParent: TSpaceEngine); override;
+    procedure Update(const DeltaTime: Single); override;
+    procedure OnCollision(const Actor: TSpaceActor); override;
+  end;
 
   { TScreenSpace }
 
   TScreenSpace = class(TGameScreen)
   private
     Engine: TSpaceEngine;
-    ShipModel:  array[0..5] of TR3D_Model;
+    PiratesModel:  array[0..4] of TR3D_Model;
+    PlayerModel: TR3D_Model;
+    PlanetModel: TR3D_Model;
     Ship: TSpaceShip;
-    AiShip: array[0..5] of TAiShip;
-    Gate: TSpaceGate;
+    AiShip: array[0..5] of TPirateShip;
+    AiShip2: array[0..5] of TNeutralTraderShip;
+    Planets: TPlanet;
     Camera: TSpaceCamera;
 
   public
@@ -122,7 +173,7 @@ implementation
 constructor TSpaceShip.Create(const AParent: TSpaceEngine);
 begin
   inherited Create(AParent);
-  R3D_SetModelImportScale(0.1);
+
 
 
   ColliderType:= ctBox;
@@ -132,7 +183,7 @@ begin
   MaxSpeed:=20;
 
   // Настройки стрельбы
-  FFireRate := 5.0;
+  FFireRate := 3.0;
   FLastFireTime := 0;
 
   // Настройки эффекта попадания
@@ -178,7 +229,7 @@ begin
   TrailColor := BLUE;
   ShotColor := BLUE;
 
-  FEnergy := 100;
+  EnergyOfLife := 100;
 
   // Инициализация эффекта смерти
   FIsDying := False;
@@ -203,6 +254,7 @@ begin
   if FIsDying then
   begin
     UpdateDeathEffects(DeltaTime);
+
     // Не вызываем inherited Update, чтобы корабль не двигался во время смерти
     Exit;
   end;
@@ -261,9 +313,10 @@ begin
     Exit;
 
   FLastFireTime := CurrentTime;
+  StartPos := Vector3Add(Position, GetForward);
 
-  StartPos := Vector3Add(Position, Vector3Scale(GetForward(), 0.1));
-  TImpulseLazer.Create(Engine, StartPos, GetForward(), 100.0, 25.0, ShotColor);
+  // Создаем снаряд с указанием владельца (this)
+  TImpulseLazer.Create(Engine, Self, StartPos, GetForward(), 100.0, 25.0, ShotColor);
 end;
 
 procedure TSpaceShip.OnCollision(const Actor: TSpaceActor);
@@ -275,7 +328,7 @@ begin
   inherited OnCollision(Actor);
 
   // Проверяем, что это снаряд врага
-  if (Actor is TImpulseLazer) then
+    if (Actor is TImpulseLazer) and (TImpulseLazer(Actor).Owner <> Self) then
   begin
     // Получаем цвет лазера
     LazerColor := TImpulseLazer(Actor).TrailColor;
@@ -286,17 +339,15 @@ begin
 
     // Наносим урон
     Damage := Actor.Tag;
-    Energy := Energy - Trunc(Damage);
+    EnergyOfLife := EnergyOfLife - Trunc(Damage);
    // If Energy <= 0 then FIsDying := True;
       // Проверяем условие смерти
-    if (FEnergy <= 0) and not IsDead then
+    if (EnergyOfLife <= 0) and not IsDead then
     begin
        StartDeathSequence;
     end;
 
     LazerColor :=  TImpulseLazer(Actor).TrailColor;
-    //FHitParticleSystem.initialColor := TImpulseLazer(Actor).TrailColor;
-    //FHitParticleSystem.colorVariance :=TImpulseLazer(Actor).TrailColor;
 
     // Устанавливаем цвет частиц в соответствии с цветом лазера
     FHitParticleSystem.initialColor := LazerColor;
@@ -381,7 +432,7 @@ var
   fadeFactor: Single;
 begin
   if not FIsDying then Exit;
-
+  ActorCollison := False;
   FDeathTimer := FDeathTimer - DeltaTime;
 
   // Вычисляем коэффициент затухания (от 1.0 до 0.0)
@@ -432,20 +483,128 @@ if FHitParticleSystem.count > 0 then
  // end;
 end;
 
-{ TAiShip }
-
-function TAiShip.CalculateRollInput(CurrentUp, TargetUp: TVector3): Single;
-var
-  CrossProduct: TVector3;
-  DotProduct: Single;
+{ TBaseAiShip }
+constructor TBaseAiShip.Create(const AParent: TSpaceEngine);
 begin
-  CrossProduct := Vector3CrossProduct(CurrentUp, TargetUp);
-  DotProduct := Vector3DotProduct(GetForward(), CrossProduct);
-  Result := Clamp(DotProduct, -1, 1);
+  inherited Create(AParent);
+
+  ColliderType := ctBox;
+  DoCollision := True;
+  AlignToHorizon := False;
+  MaxSpeed := 8;
+  FFireRate := 2.0;
+  FLastFireTime := 0;
+
+  // Инициализация параметров орбиты
+  FOrbitRadius := 0;
+  FOrbitHeight := 0;
+  FOrbitSpeed := 0.2;
+  FCurrentPlanet := nil;
 end;
 
-function TAiShip.CalculatePitchInput(CurrentForward, TargetDirection: TVector3
-  ): Single;
+procedure TBaseAiShip.Update(const DeltaTime: Single);
+begin
+  inherited Update(DeltaTime);
+
+  // Базовая логика орбитального движения
+  UpdateOrbitalBehavior(DeltaTime);
+end;
+
+function TBaseAiShip.FindNearestPlanet: TPlanet;
+var
+  i: Integer;
+  Actor: TSpaceActor;
+  Distance, MinDistance: Single;
+begin
+  Result := nil;
+  MinDistance := 1000.0;
+
+  for i := 0 to Engine.Count - 1 do
+  begin
+    Actor := Engine.Items[i];
+    if (Actor is TPlanet) and not Actor.IsDead then
+    begin
+      Distance := Vector3Distance(Position, Actor.Position);
+      if Distance < MinDistance then
+      begin
+        MinDistance := Distance;
+        Result := TPlanet(Actor);
+      end;
+    end;
+  end;
+end;
+
+procedure TBaseAiShip.UpdateOrbitalBehavior(DeltaTime: Single);
+var
+  Angle: Single;
+  TargetPos, ToTarget: TVector3;
+  DistanceToTarget: Single;
+begin
+  // Поиск ближайшей планеты
+  if FCurrentPlanet = nil then
+    FCurrentPlanet := FindNearestPlanet;
+
+  if FCurrentPlanet = nil then
+  begin
+    // Просто летим вперед, если нет планеты
+    InputForward := 0.3;
+    Exit;
+  end;
+
+  // Инициализация параметров орбиты при первом вызове
+  if FOrbitRadius = 0 then
+  begin
+    FOrbitRadius := 160 + Random(220);
+    FOrbitHeight := -50 + Random(100);
+    FOrbitSpeed := 0.1 + Random * 0.3;
+    FTargetOrbitHeight := FOrbitHeight;
+  end;
+
+  // Плавное изменение высоты орбиты
+  FOrbitAngleChangeTimer := FOrbitAngleChangeTimer + DeltaTime;
+  if FOrbitAngleChangeTimer > 10.0 then
+  begin
+    FOrbitAngleChangeTimer := 0;
+    FTargetOrbitHeight := -30 + Random(80);
+  end;
+  FOrbitHeight := SmoothDamp(FOrbitHeight, FTargetOrbitHeight, 0.2, DeltaTime);
+
+  // Вычисление позиции на орбите
+  Angle := GetTime() * FOrbitSpeed;
+  TargetPos := Vector3Add(FCurrentPlanet.Position,
+    Vector3Create(
+      FOrbitRadius * Cos(Angle),
+      FOrbitHeight,
+      FOrbitRadius * Sin(Angle)
+    )
+  );
+
+  // Направление к цели
+  ToTarget := Vector3Subtract(TargetPos, Position);
+  DistanceToTarget := Vector3Length(ToTarget);
+  ToTarget := Vector3Normalize(ToTarget);
+
+  // Плавное управление
+  InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * 0.5;
+  InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * 0.5;
+  InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * 0.3;
+
+  // Управление скоростью
+  if DistanceToTarget > FOrbitRadius * 0.3 then
+    InputForward := 0.7
+  else
+    InputForward := 0.4;
+end;
+
+function TBaseAiShip.CalculateRollInput(CurrentUp, TargetUp: TVector3): Single;
+var
+  CrossProduct: TVector3;
+begin
+  CrossProduct := Vector3CrossProduct(CurrentUp, TargetUp);
+  Result := Clamp(Vector3DotProduct(GetForward(), CrossProduct), -1, 1);
+end;
+
+function TBaseAiShip.CalculatePitchInput(CurrentForward, TargetDirection: TVector3): Single;
 var
   ProjectedForward, ProjectedTarget: TVector3;
   Angle: Single;
@@ -460,305 +619,391 @@ begin
   Result := Clamp(Angle * 2, -1, 1);
 end;
 
-function TAiShip.CalculateYawInput(CurrentForward, TargetDirection: TVector3
-  ): Single;
+function TBaseAiShip.CalculateYawInput(CurrentForward, TargetDirection: TVector3): Single;
 var
   CrossProduct: TVector3;
-  DotProduct: Single;
 begin
   CrossProduct := Vector3CrossProduct(CurrentForward, TargetDirection);
-  DotProduct := Vector3DotProduct(Vector3Create(0, 1, 0), CrossProduct);
-  Result := Clamp(DotProduct, -1, 1);
+  Result := Clamp(Vector3DotProduct(Vector3Create(0, 1, 0), CrossProduct), -1, 1);
 end;
 
-constructor TAiShip.Create(const AParent: TSpaceEngine);
-begin
-  inherited Create(AParent);//, FileName);
-  R3D_SetModelImportScale(0.1);
-
-  ColliderType:= ctBox;
-
-  DoCollision := True;
-  AlignToHorizon:=False;
-
-  MaxSpeed:=2;
-  ShipType := Pirate;
-  TrailColor := RED;
-  // Настройки стрельбы
-  FFireRate := 1.0; // Медленная стрельба
-  FLastFireTime := 0;
-  FFireRange := 150.0;
-
-  // Настройки плавности управления
-  ThrottleResponse := 5;  // Уменьшаем отзывчивость двигателя
-  TurnResponse := 5;      // Уменьшаем отзывчивость поворотов
-  TurnRate := 120;        // Уменьшаем скорость поворота
-
-end;
-
-procedure TAiShip.Update(const DeltaTime: Single);
+function TBaseAiShip.IsFacingTarget(TargetPos: TVector3; MaxAngleDegrees: Single): Boolean;
 var
-  Gate: TSpaceGate;
-  OrbitHeight: Single;
-  Angle, Dist: Single;
-  TargetPos, OrbitNormal, RightVector, ToTarget, Dir, EscapeDirection: TVector3;
-  DistanceToTarget: Single;
-  AvoidanceForce: TVector3;
-  i: Integer;
+  ToTarget, ForwardDir: TVector3;
+  DotProduct, AngleRad: Single;
+begin
+  ForwardDir := GetForward();
+  ToTarget := Vector3Normalize(Vector3Subtract(TargetPos, Position));
 
-  Player: TSpaceActor;
-  DistanceToPlayer: Single;
-  PlayerAvoidanceForce: TVector3;
-  IsTooCloseToPlayer: Boolean;
-  IsMediumCloseToPlayer: Boolean;
+  DotProduct := Vector3DotProduct(ForwardDir, ToTarget);
+  AngleRad := ArcCos(Clamp(DotProduct, -1, 1));
 
-  // Новые переменные для плавного управления
-  SmoothFactor: Single;
+  Result := (AngleRad * RAD2DEG) <= MaxAngleDegrees;
+end;
 
+
+
+constructor TNeutralTraderShip.Create(const AParent: TSpaceEngine);
+begin
+  inherited Create(AParent);
+
+  ShipStatus := ss_Neutral;
+  TrailColor := BLUE;
+  ShotColor := GREEN;
+  FState := tsOrbiting;
+  FOrbitTime := 0;
+  FMaxOrbitTime := 15 + Random(30);
+  FTravelTimer := 0;
+end;
+
+procedure TNeutralTraderShip.Update(const DeltaTime: Single);
 begin
   inherited Update(DeltaTime);
 
-  // Инициализация параметров орбиты при первом вызове
-  if FOrbitRadius = 0 then
-  begin
-    FOrbitRadius := 160 + Random(220);
-    FOrbitHeight := -100 + Random(100);
-    FOrbitSpeed := 0.2 + Random * 0.2;
-    FTargetOrbitHeight := FOrbitHeight;
+  case FState of
+    tsOrbiting: UpdateOrbitingBehavior(DeltaTime);
+    tsTraveling: UpdateTravelingBehavior(DeltaTime);
   end;
+end;
 
-  // Поиск SpaceGate в сцене
-  Gate := nil;
-  for i := 0 to Engine.Count - 1 do
+procedure TNeutralTraderShip.UpdateOrbitingBehavior(DeltaTime: Single);
+begin
+  // Увеличиваем время на орбите
+  FOrbitTime := FOrbitTime + DeltaTime;
+
+  // Если достаточно наорбитились, ищем новую цель
+  if FOrbitTime >= FMaxOrbitTime then
   begin
-    if Engine.Items[i] is TSpaceGate then
+    FindDestinationPlanet;
+    if FDestinationPlanet <> nil then
     begin
-      Gate := TSpaceGate(Engine.Items[i]);
-      Break;
+      FState := tsTraveling;
+      FTravelTimer := 0;
+      FOrbitTime := 0;
+      FMaxOrbitTime := 20 + Random(40);
     end;
   end;
 
-  if Gate = nil then
-  begin  // если не нашли просто летим
-    InputForward := 0.5;
+  // Вызываем базовое орбитальное поведение
+  inherited UpdateOrbitalBehavior(DeltaTime);
+end;
+
+procedure TNeutralTraderShip.UpdateTravelingBehavior(DeltaTime: Single);
+var
+  ToDestination: TVector3;
+  Distance: Single;
+begin
+  if FDestinationPlanet = nil then
+  begin
+    FState := tsOrbiting;
     Exit;
   end;
 
-  // Поиск игрока
-  Player := nil;
-  for i := 0 to Engine.Count - 1 do
+  // Направление к планете назначения
+  ToDestination := Vector3Subtract(FDestinationPlanet.Position, Position);
+  Distance := Vector3Length(ToDestination);
+  ToDestination := Vector3Normalize(ToDestination);
+
+  // Управление кораблем
+  InputYawLeft := CalculateYawInput(GetForward(), ToDestination) * 0.7;
+  InputPitchDown := CalculatePitchInput(GetForward(), ToDestination) * 0.7;
+  InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * 0.4;
+
+  // Управление скоростью
+  if Distance > 200 then
+    InputForward := 0.8
+  else if Distance < 50 then
   begin
-    if (Engine.Items[i] is TSpaceShip) and (Engine.Items[i] <> Self) then
-    begin
-      Player := Engine.Items[i];
-      Break;
-    end;
-  end;
-
-  // Проверяем дистанцию до игрока
-  IsTooCloseToPlayer := False;
-  IsMediumCloseToPlayer := False;
-  if Player <> nil then
-  begin
-    DistanceToPlayer := Vector3Distance(Position, Player.Position);
-    IsTooCloseToPlayer := DistanceToPlayer < 15;
-    IsMediumCloseToPlayer := DistanceToPlayer < 30;
-  end;
-
-  // Сбрасываем управление
-  InputLeft := 0;
-  InputUp := 0;
-  InputPitchDown := 0;
-  InputRollRight := 0;
-  InputYawLeft := 0;
-
-  // Если слишком близко к игроку - режим побега
-  if IsTooCloseToPlayer then
-  begin
-    // Вычисляем направление для побега (от игрока)
-    EscapeDirection := Vector3Normalize(Vector3Subtract(Position, Player.Position));
-
-    // Цель побега - точка в направлении от игрока
-    TargetPos := Vector3Add(Position, Vector3Scale(EscapeDirection, 50));
-
-    // ПЛАВНОЕ управление для побега
-    ToTarget := Vector3Subtract(TargetPos, Position);
-    ToTarget := Vector3Normalize(ToTarget);
-
-    // Вычисляем необходимые повороты
-    SmoothFactor := 0.8; // Коэффициент плавности
-
-    // Рыскание (Yaw) - поворот влево/вправо
-    InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * SmoothFactor;
-
-    // Тангаж (Pitch) - наклон вверх/вниз
-    InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * SmoothFactor;
-
-    // Крен (Roll) - для плавного выравнивания
-    InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * SmoothFactor * 0.5;
-
-    // Ускоряемся для побега
-    InputForward := 0.6;
-
-    // Визуальный эффект
-   // ActorModel.materials[1].emission.energy := 350.0;
+    // Прибыли к цели
+    FCurrentPlanet := FDestinationPlanet;
+    FDestinationPlanet := nil;
+    FState := tsOrbiting;
+    InputForward := 0.3;
   end
   else
+    InputForward := 0.5;
+
+  // Таймер безопасности - если долго летим, возвращаемся на орбиту
+  FTravelTimer := FTravelTimer + DeltaTime;
+  if FTravelTimer > 60 then
   begin
-    // Обычное поведение (орбита)
-    FOrbitAngleChangeTimer += DeltaTime;
-    if FOrbitAngleChangeTimer > 8.0 then
+    FState := tsOrbiting;
+    FTravelTimer := 0;
+  end;
+end;
+
+procedure TNeutralTraderShip.FindDestinationPlanet;
+var
+  i: Integer;
+  Actor: TSpaceActor;
+  CandidatePlanets: array of TPlanet;
+begin
+  FDestinationPlanet := nil;
+  SetLength(CandidatePlanets, 0);
+
+  // Собираем все планеты кроме текущей
+  for i := 0 to Engine.Count - 1 do
+  begin
+    Actor := Engine.Items[i];
+    if (Actor is TPlanet) and (Actor <> FCurrentPlanet) and not Actor.IsDead then
     begin
-      FOrbitAngleChangeTimer := 0;
-      FTargetOrbitHeight := 5 + Random(25);
+      SetLength(CandidatePlanets, Length(CandidatePlanets) + 1);
+      CandidatePlanets[High(CandidatePlanets)] := TPlanet(Actor);
     end;
-    OrbitHeight := SmoothDamp(FOrbitHeight, FTargetOrbitHeight, 0.3, DeltaTime);
-    FOrbitHeight := OrbitHeight;
+  end;
 
-    // Вычисление позиции на орбите
-    Angle := GetTime() * FOrbitSpeed;
-    OrbitNormal := Vector3Create(0, 1, 0);
+  // Выбираем случайную планету
+  if Length(CandidatePlanets) > 0 then
+    FDestinationPlanet := CandidatePlanets[Random(Length(CandidatePlanets))];
+end;
 
-    RightVector := Vector3Normalize(Vector3CrossProduct(OrbitNormal, Vector3Create(0, 0, 1)));
-    TargetPos := Vector3Add(Gate.Position,
-      Vector3Add(
-        Vector3Scale(RightVector, FOrbitRadius * Cos(Angle)),
-        Vector3Scale(Vector3Normalize(Vector3CrossProduct(RightVector, OrbitNormal)), FOrbitRadius * Sin(Angle)))
-      );
-    TargetPos.y := Gate.Position.y + OrbitHeight;
+constructor TPirateShip.Create(const AParent: TSpaceEngine);
+begin
+  inherited Create(AParent);
 
-    // Избегание препятствий
-    AvoidanceForce := Vector3Zero();
-    PlayerAvoidanceForce := Vector3Zero();
+  ShipStatus := ssPirate;
+  TrailColor := RED;
+  ShotColor := RED;
+  FState := psPatrolling;
 
-    if Player <> nil then
+  FDetectionRange := 300.0;
+  FAttackRange := 200.0;
+  FEvadeRange := 150.0;
+  FStateTimer := 0;
+  FMaxPatrolTime := 30 + Random(30);
+end;
+
+procedure TPirateShip.Update(const DeltaTime: Single);
+begin
+  inherited Update(DeltaTime);
+
+  FStateTimer := FStateTimer + DeltaTime;
+
+  // Автоматический возврат к патрулированию через некоторое время
+  if (FState <> psPatrolling) and (FStateTimer > 45) then
+    ChangeState(psPatrolling);
+
+  case FState of
+    psPatrolling: UpdatePatrollingBehavior(DeltaTime);
+    psChasing: UpdateChasingBehavior(DeltaTime);
+    psAttacking: UpdateAttackingBehavior(DeltaTime);
+    psEvading: UpdateEvadingBehavior(DeltaTime);
+  end;
+end;
+
+procedure TPirateShip.OnCollision(const Actor: TSpaceActor);
+begin
+  inherited OnCollision(Actor);
+
+  // Если в пирата попали, он становится агрессивным
+  if (Actor is TImpulseLazer) and (TImpulseLazer(Actor).Owner <> Self) then
+  begin
+    FTarget := TImpulseLazer(Actor).Owner;
+    ChangeState(psAttacking);
+  end;
+end;
+
+procedure TPirateShip.ChangeState(NewState: TPirateState);//(psPatrolling, psChasing, psAttacking, psEvading));
+begin
+  if FState = NewState then Exit;
+
+  FState := NewState;
+  FStateTimer := 0;
+
+  case NewState of
+    psPatrolling: FMaxPatrolTime := 20 + Random(40);
+    psAttacking: MaxSpeed := 12; // Повышаем скорость в атаке
+    else MaxSpeed := 8;
+  end;
+end;
+
+procedure TPirateShip.FindTarget;
+var
+  i: Integer;
+  Actor: TSpaceActor;
+  Distance, MinDistance: Single;
+begin
+  FTarget := nil;
+  MinDistance := FDetectionRange;
+
+  for i := 0 to Engine.Count - 1 do
+  begin
+    Actor := Engine.Items[i];
+
+    // Ищем торговые корабли и игрока
+    if (Actor <> Self) and not Actor.IsDead and
+       ((Actor is TNeutralTraderShip) or (Actor is TSpaceShip)) and
+       (Actor.ShipStatus <> ssPirate) then
     begin
-      Dist := Vector3Distance(Position, Player.Position);
-      if Dist < 25 then
+      Distance := Vector3Distance(Position, Actor.Position);
+      if Distance < MinDistance then
       begin
-        Dir := Vector3Normalize(Vector3Subtract(Position, Player.Position));
-        PlayerAvoidanceForce := Vector3Add(PlayerAvoidanceForce,
-          Vector3Scale(Dir, 0.8 - (Dist / 25)));
-      end;
-    end;
-
-    for i := 0 to Engine.Count - 1 do
-    begin
-      if (Engine.Items[i] <> Self) and (Engine.Items[i] <> Gate) and (Engine.Items[i] <> Player) then
-      begin
-        Dist := Vector3Distance(Position, Engine.Items[i].Position);
-        if Dist < 25 then
-        begin
-          Dir := Vector3Normalize(Vector3Subtract(Position, Engine.Items[i].Position));
-          AvoidanceForce := Vector3Add(AvoidanceForce,
-            Vector3Scale(Dir, 0.6 - (Dist / 25)));
-        end;
-      end;
-    end;
-
-    if Vector3Length(PlayerAvoidanceForce) > 0 then
-    begin
-      PlayerAvoidanceForce := Vector3Normalize(PlayerAvoidanceForce);
-      TargetPos := Vector3Add(TargetPos, Vector3Scale(PlayerAvoidanceForce, 15));
-    end;
-
-    if Vector3Length(AvoidanceForce) > 0 then
-    begin
-      AvoidanceForce := Vector3Normalize(AvoidanceForce);
-      TargetPos := Vector3Add(TargetPos, Vector3Scale(AvoidanceForce, 12));
-    end;
-
-    // Направление к цели
-    ToTarget := Vector3Subtract(TargetPos, Position);
-    DistanceToTarget := Vector3Length(ToTarget);
-
-    // ПЛАВНОЕ управление для следования за целью
-    ToTarget := Vector3Normalize(ToTarget);
-    SmoothFactor := 0.6;
-
-    InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * SmoothFactor;
-    InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * SmoothFactor;
-    InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * SmoothFactor * 0.3;
-
-    // Управление скоростью
-    if IsMediumCloseToPlayer then
-    begin
-      InputForward := 0.5;//Max(0.3, DistanceToTarget / FOrbitRadius * 0.6);
-    end
-    else if DistanceToTarget > FOrbitRadius * 0.4 then
-    begin
-      InputForward := 0.6;//Min(0.6, DistanceToTarget / FOrbitRadius)
-    end
-    else
-    begin
-      InputForward := 0.4;// + 0.06 * Sin(GetTime() * 2);
-    end;
-
-    // Плавное изменение радиуса орбиты
-    if FOrbitChangeTimer > 10.0 then
-    begin
-      FOrbitChangeTimer := 0;
-      FTargetOrbitRadius := 30 + Random(40);
-    end;
-    FOrbitChangeTimer += DeltaTime;
-    FOrbitRadius := SmoothDamp(FOrbitRadius, FTargetOrbitRadius, 0.2, DeltaTime);
-
-    // Стрельба по игроку
-    if (Player <> nil) and (not IsTooCloseToPlayer) then
-    begin
-      DistanceToPlayer := Vector3Distance(Position, Player.Position);
-      if DistanceToPlayer < FFireRange then
-      begin
-        // Плавный поворот к игроку для стрельбы
-        ToTarget := Vector3Normalize(Vector3Subtract(Player.Position, Position));
-        InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * 0.4;
-        InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * 0.4;
-
-        Shot;
+        MinDistance := Distance;
+        FTarget := Actor;
       end;
     end;
   end;
 end;
 
-
-
-
-
-
-
-
-{ TSpaceGate }
-
-constructor TSpaceGate.Create(const AParent: TSpaceEngine);
+procedure TPirateShip.UpdatePatrollingBehavior(DeltaTime: Single);
 begin
+  // Периодически ищем цели
+  if FStateTimer > 5 then
+  begin
+    FindTarget;
+    if FTarget <> nil then
+    begin
+      ChangeState(psChasing);
+      Exit;
+    end;
+    FStateTimer := 0;
+  end;
 
+  // Базовое орбитальное поведение
+  inherited UpdateOrbitalBehavior(DeltaTime);
+
+  // Случайно меняем параметры орбиты для более естественного патрулирования
+  if FStateTimer > 10 then
+  begin
+    FOrbitRadius := 120 + Random(180);
+    FOrbitHeight := -40 + Random(80);
+    FStateTimer := 0;
+  end;
+end;
+
+procedure TPirateShip.UpdateChasingBehavior(DeltaTime: Single);
+var
+  ToTarget: TVector3;
+  Distance: Single;
+begin
+  if (FTarget = nil) or FTarget.IsDead then
+  begin
+    ChangeState(psPatrolling);
+    Exit;
+  end;
+
+  ToTarget := Vector3Subtract(FTarget.Position, Position);
+  Distance := Vector3Length(ToTarget);
+  ToTarget := Vector3Normalize(ToTarget);
+
+  // Преследование цели
+  InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * 0.8;
+  InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * 0.8;
+  InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * 0.5;
+
+  // Управление скоростью
+  if Distance > FAttackRange then
+    InputForward := 0.9
+  else
+  begin
+    ChangeState(psAttacking);
+    InputForward := 0.6;
+  end;
+end;
+
+procedure TPirateShip.UpdateAttackingBehavior(DeltaTime: Single);
+var
+  ToTarget: TVector3;
+  Distance: Single;
+begin
+  if (FTarget = nil) or FTarget.IsDead then
+  begin
+    ChangeState(psPatrolling);
+    Exit;
+  end;
+
+  ToTarget := Vector3Subtract(FTarget.Position, Position);
+  Distance := Vector3Length(ToTarget);
+  ToTarget := Vector3Normalize(ToTarget);
+
+  // Атака цели
+  InputYawLeft := CalculateYawInput(GetForward(), ToTarget) * 0.9;
+  InputPitchDown := CalculatePitchInput(GetForward(), ToTarget) * 0.9;
+  InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * 0.6;
+
+  // Управление скоростью и стрельба
+  if Distance > FAttackRange * 0.8 then
+    InputForward := 0.8
+  else if Distance < FAttackRange * 0.4 then
+    InputForward := 0.4
+  else
+    InputForward := 0.6;
+
+  // Стрельба при возможности
+  if (Distance < FAttackRange) and IsFacingTarget(FTarget.Position, 12) then
+    Shot;
+
+  // Проверка на отступление
+  if (EnergyOfLife < 30) or (Distance < FEvadeRange) then
+    ChangeState(psEvading);
+end;
+
+procedure TPirateShip.UpdateEvadingBehavior(DeltaTime: Single);
+var
+  EscapeDirection: TVector3;
+begin
+  if FTarget = nil then
+  begin
+    ChangeState(psPatrolling);
+    Exit;
+  end;
+
+  // Направление для побега (от цели)
+  EscapeDirection := Vector3Normalize(Vector3Subtract(Position, FTarget.Position));
+
+  // Управление для побега
+  InputYawLeft := CalculateYawInput(GetForward(), EscapeDirection) * 0.9;
+  InputPitchDown := CalculatePitchInput(GetForward(), EscapeDirection) * 0.9;
+  InputRollRight := CalculateRollInput(GetUp(), Vector3Create(0, 1, 0)) * 0.7;
+
+  // Максимальная скорость для побега
+  InputForward := 1.0;
+
+  // Возврат к патрулированию после отступления
+  if FStateTimer > 15 then
+    ChangeState(psPatrolling);
+end;
+
+
+
+{ TPlanet }
+constructor TPlanet.Create(const AParent: TSpaceEngine);
+begin
   inherited Create(AParent);
-  R3D_SetModelImportScale(0.05);
-  BodyModel := R3D_LoadModel(('data' + '/models/Gate_body.glb'));
-  RingModel := R3D_LoadModel(('data' + '/models/Gate_ring.glb'));
 
-   ShipType := Station; // Важно: устанавливаем тип Station
-   Position := Vector3Create(10, -100, 100);
-   OriginalPosition := Position; // Сохраняем оригинальную позицию
-   ColliderType := ctBox;
-   ActorModel := BodyModel;
-   DoCollision := True;
-   AlignToHorizon := False;
-   MaxSpeed := 0; // Статический объект
+  //BodyModel := R3D_LoadModel(('data' + '/models/Gate_body.glb'));
+ // RingModel := R3D_LoadModel(('data' + '/models/Gate_ring.glb'));
 
+  ShipType := stPlanet; // Важно: устанавливаем тип Station
+  ShipStatus := ss_Neutral;
+  Position := Vector3Create(0, 0, 0);
+  OriginalPosition := Position; // Сохраняем оригинальную позицию
+  ColliderType := ctBox;
+  //ActorModel := BodyModel;
+  DoCollision := True;
+  AlignToHorizon := False;
+  MaxSpeed := 0; // Статический объект
+
+  FBloom:= False;
+  FBloomBlink:= False;
+  FBloomMatIndex := 0;
+  FBloomEnergy := 70;
+
+  {
    Ring := TSpaceActor.Create(AParent);
    Ring.Position := Self.Position;
    Ring.DoCollision := False;
    Ring.ActorModel := RingModel;
    Ring.AlignToHorizon := False;
    Ring.MaxSpeed := 0;
-   Ring.ShipType := Station; // И кольцо тоже статическое
+   Ring.ShipType := stPlanet; // И кольцо тоже статическое }
+
 end;
 
-procedure TSpaceGate.Update(const DeltaTime: Single);
+procedure TPlanet.Update(const DeltaTime: Single);
 const
-  MinEnergy = 30;
-  MaxEnergy = 70;
+  MinEnergy = 20;
+  MaxEnergy = 60;
   PulseDuration = 1.0; // Полный цикл за 1 сек
 var
   PulseFactor: Single;
@@ -769,7 +1014,7 @@ begin
     // ФИКСИРУЕМ ПОЗИЦИЮ ПЕРЕД ОБНОВЛЕНИЕМ
   FixPosition;
   // Проверяем, является ли объект статическим
-  IsStaticObject := (MaxSpeed = 0) or (ShipType = Station);
+  IsStaticObject := (MaxSpeed = 0) or (ShipType = stPlanet);
 
   // Только движущиеся объекты обновляют позицию через velocity
   if not IsStaticObject then
@@ -778,6 +1023,17 @@ begin
     Position := Vector3Add(Position, Vector3Scale(Velocity, DeltaTime));
   end;
 
+  if FBloom then
+  begin
+    PulseFactor := (Sin(GetTime() * (PI/PulseDuration)) + 1) * 0.5; // 0..1
+    ActorModel.materials[FBloomMatIndex].emission.color := FBloomColor;
+    if BloomBlink then ActorModel.materials[FBloomMatIndex].emission.energy := Lerp(MinEnergy, MaxEnergy, PulseFactor)
+    else
+    ActorModel.materials[FBloomMatIndex].emission.energy := FBloomEnergy;
+
+  end;
+
+   {
    Ring.Position := Self.Position;
    Ring.RotateLocalEuler(Vector3Create(0, 1, 0), 30 * DeltaTime);
 
@@ -786,7 +1042,8 @@ begin
 
    Ring.ActorModel.materials[1].emission.color := BLUE;
    Ring.ActorModel.materials[1].emission.energy := Lerp(MinEnergy, MaxEnergy, PulseFactor);
-   Ring.ActorModel.materials[1].albedo.color := BLACK;
+   Ring.ActorModel.materials[1].albedo.color := BLACK;}
+
     // ФИКСИРУЕМ ПОЗИЦИЮ  ОБНОВЛЕНИЕМ
   FixPosition;
 end;
@@ -798,10 +1055,12 @@ end;
 procedure TScreenSpace.Init;
 var i: integer;
 begin
+
+
   Engine := TSpaceEngine.Create;
   Engine.CrosshairFar.Create('data' + '/models/UI/crosshair2.gltf');
   Engine.CrosshairNear.Create('data' + '/models/UI/crosshair.gltf');
-  Engine.LoadSkyBox('data' +'/skybox/planets/earthlike_planet_close.hdr', SQHigh, STPanorama);
+  Engine.LoadSkyBox('data' +'/skybox/HDR_blue_local_star.hdr', SQHigh, STPanorama);
 
 
   Engine.EnableSkybox;
@@ -811,45 +1070,120 @@ begin
   R3D_SetLightActive(Engine.Light[0], true);
   R3D_EnableShadow(Engine.Light[0], 4096);
 
-  R3D_SetModelImportScale(1.1);
+
   R3D_SetBrightness(3);
 
 
   Camera := TSpaceCamera.Create(True, 50);
 
-  for i := 0 to 5 do
-  begin
-    R3D_SetModelImportScale(0.1);
-    ShipModel[i] := R3D_LoadModel('data/models/test.glb');
-  end;
-
-  Ship := TSpaceShip.Create(Engine); //, 'data/models/test.glb');
-  Ship.ActorModel := ShipModel[5];
-  Ship.NumMatEngine:=1;
-  Ship.Energy:=100000;
-  Gate := TSpaceGate.Create(Engine);
-
   for i := 0 to 4 do
   begin
-    AiShip[i] := TAiShip.Create(Engine);//, ('data/models/test.glb'));
-    AiShip[i].ActorModel := ShipModel[i];
-    AiShip[i].MaxSpeed:= GetRandomValue(5,15);
-    AiShip[i].Position := VEctor3Create(GetRandomValue(-100,100), GetRandomValue(-100,100),GetRandomValue(-100,100));
-    AiShip[i].TrailColor := RED;
-    AiShip[i].ShotColor := GREEN;
-    AiShip[i].NumMatEngine := 1;
-    AiShip[i].Energy:=10;
+
+    PiratesModel[i] := R3D_LoadModel('data/models/ships/Spaceship_BarbaraTheBee.glb');
   end;
 
+  playerModel := R3D_LoadModel('data/models/ships/Spaceship_BarbaraTheBee.glb');
+
+  Ship := TSpaceShip.Create(Engine); //, 'data/models/test.glb');
+  Ship.ActorModel := PlayerModel;
+  Ship.NumMatEngine:=1;
+  Ship.EnergyOfLife:=100000;
+ // Ship.Scale:=10;
 
 
+ for i := 0 to 4 do
+ begin
+   AiShip[i] := TPirateShip.Create(Engine);
+   AiShip[i].ActorModel := PiratesModel[0];
+   AiShip[i].MaxSpeed := GetRandomValue(5, 15);
+   AiShip[i].Position := Vector3Create(GetRandomValue(-100, 100), GetRandomValue(-100, 100), GetRandomValue(-100, 100));
+   AiShip[i].TrailColor := BLUE;
+   AiShip[i].ShotColor := GREEN;
+   AiShip[i].NumMatEngine := 1;
+   AiShip[i].EnergyOfLife := 100;
+   AiShip[i].ShipType:=stShip_Bee;
+   AiShip[i].ShipStatus:=ssPirate;
+end;
+ 
+ for i := 0 to 4 do
+ begin
+   AiShip2[i] := TNeutralTraderShip.Create(Engine);
+   AiShip2[i].ActorModel := PiratesModel[0];
+   AiShip2[i].MaxSpeed := GetRandomValue(5, 15);
+   AiShip2[i].Position := Vector3Create(GetRandomValue(-100, 100), GetRandomValue(-100, 100), GetRandomValue(-100, 100));
+   AiShip2[i].TrailColor := BLUE;
+   AiShip2[i].ShotColor := GREEN;
+   AiShip2[i].NumMatEngine := 1;
+   AiShip2[i].EnergyOfLife := 100;
+   AiShip2[i].ShipType:=stShip_Bee;
+   AiShip2[i].ShipStatus:=ss_Agresive;
+end;
+ {
+ for i := 0 to 18 do
+ begin
+   AiShip[i] := TAiShip.Create(Engine);
+   AiShip[i].ActorModel := PiratesModel[0];
+   AiShip[i].MaxSpeed := GetRandomValue(5, 15);
+   AiShip[i].Position := Vector3Create(GetRandomValue(-100, 100), GetRandomValue(-100, 100), GetRandomValue(-100, 100));
+   AiShip[i].TrailColor := BLUE;
+   AiShip[i].ShotColor := GREEN;
+   AiShip[i].NumMatEngine := 1;
+   AiShip[i].EnergyOfLife := 100;
+
+   if i < 5 then
+   begin
+     AiShip[i].ShipStatus := ss_Neutral;
+     AiShip[i].TrailColor := BLUE;  // Синий для нейтральных
+     AiShip[i].ShotColor := GREEN;  // Зеленый для нейтральных
+     // Нейтральные корабли могут начинать в нейтральном состоянии
+     AiShip[i].ChangeState(asNeutral);
+   end
+   else
+   begin
+     AiShip[i].ShipStatus := ssPirate;
+     AiShip[i].TrailColor := RED;   // Красный для пиратов
+     AiShip[i].ShotColor := RED;    // Красный для пиратов
+     // Пираты начинают в агрессивном состоянии
+     AiShip[i].ChangeState(asAggressive);
+   end;
+ end; }
+  {
+  for i := 5 to 9 do
+  begin
+    AiShip[i] := TAiShip.Create(Engine);//, ('data/models/test.glb'));
+    AiShip[i].ActorModel := PiratesModel[0];
+    AiShip[i].MaxSpeed:= GetRandomValue(5,15);
+    AiShip[i].Position := VEctor3Create(GetRandomValue(-100,100), GetRandomValue(-100,100),GetRandomValue(-100,100));
+    AiShip[i].TrailColor := BLUE;
+    AiShip[i].ShotColor := GREEN;
+    AiShip[i].NumMatEngine := 1;
+    AiShip[i].EnergyOfLife:=100;
+     AiShip[i].ShipStatus:=ssPirate;
+    AiShip[i].ChangeState(asAggressive);
+ //   AiShip[i].Scale:=10;
+  end;
+  }
   // При старте игры или активации корабля
  // DisableCursor(); // Скрыть курсор
   SetMousePosition(GetScreenWidth div 2, GetScreenHeight div 2);
 
   Engine.Radar.Player := Ship;
 
-   Ship.Position := Vector3Create(100,100,100);
+  Ship.Position := Vector3Create(100,100,100);
+
+
+   planetModel := R3D_LoadModel('data/models/planets/Planet_11.glb');
+   Planets := TPlanet.Create(Engine);
+   Planets.ActorModel := planetModel;
+   //Planet.Scale:= 100;
+   Planets.BloomColor := RED;
+   Planets.BloomBlink:=True;
+   Planets.BloomMatIndex:=1;
+   Planets.Bloom:=True;
+
+   Planets.Scale:=50;
+
+
 
   end;
 

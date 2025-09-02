@@ -45,7 +45,7 @@ begin
     R3D_SetAmbientColor(DARKGRAY);
     R3D_SetSSAO(True);
     R3D_SetSSAORadius(0.5);
-    R3D_SetBloomIntensity(1.05);
+    R3D_SetBloomIntensity(0.08);
     R3D_SetBloomMode(R3D_BLOOM_MIX);
     R3D_SetTonemapMode(R3D_TONEMAP_ACES);
     R3D_SetModelImportScale(0.01);

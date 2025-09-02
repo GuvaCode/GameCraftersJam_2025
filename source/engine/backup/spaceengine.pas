@@ -12,7 +12,8 @@ type
   TSkyBoxQuality = (SQLow = 512, SQNormal = 1024, SQHigh = 2048, SQVeryHigh = 4096);
   TSkyBoxType = (STPanorama, STCubemap);   // Тип скайбокса: панорамный или кубическая карта
   TColliderType = (ctBox, ctSphere);   // Типы коллайдеров для столкновений
-  TShipType = (Unknow, Asteroid, Police, Station, Neutral, Pirate, Missle, Beacon, Container, Enemy, Impulse);  // Типы космических объектов/кораблей
+  TShipType = (stUnknow, stPlanet, stShip_Bee, stShip_Flamingo, stShip_Forg, stShip_Panda, stObject_Jar, stObject_Sphere);  // Типы космических объектов/кораблей
+  TShipStatus = (ss_Neutral, ss_Agresive, ssPirate);
 
   { TSpaceDust }
   // Класс для визуализации космической пыли
@@ -143,11 +144,13 @@ type
    // Базовый класс для всех объектов в космосе
    TSpaceActor = class
    private
+     FActorCollison: Boolean;
      FCurrentSpeed: Single;       // Текущая скорость (для плавного изменения)
      FActorIndex: Integer;        // Индекс актора
      FAlignToHorizon: Boolean;    // Флаг выравнивания к горизонту
      FColliderType: TColliderType;// Тип коллайдера
      FDoCollision: Boolean;       // Флаг обработки столкновений
+     FEnergyOfLife: Integer;
      FLastCollisionTime: Single;  // Время последнего столкновения
      FEngine: TSpaceEngine;       // Ссылка на движок
      FMaxSpeed: Single;           // Максимальная скорость
@@ -155,6 +158,7 @@ type
      FModelTransform: TMatrix;    // Матрица трансформации модели
      FOriginalPosition: TVector3;
      FProjection: TVector4;       // Проекционные параметры
+     FShipStatus: TShipStatus;
      FShipType: TShipType;        // Тип корабля/объекта
      // Плавные значения ввода управления
      FSmoothForward: Single;
@@ -260,8 +264,12 @@ type
      property TrailColor: TColorB read FTrailColor write FTrailColor;
      property OriginalPosition: TVector3 read FOriginalPosition write FOriginalPosition;
 
+     property GetCollider: TCollider read FCollider;
+     property GetVisualRotation: TQuaternion read FVisualRotation ;// Визуальное вращение (с эффектом крена)
+
    published
-     property IsDead: Boolean read FIsDead write FIsDead;
+     property IsDead: Boolean read FIsDead;
+     property ActorCollison: Boolean read FActorCollison write FActorCollison default false;
      property Visible: Boolean read FVisible write FVisible;
      property Tag: Integer read FTag write FTag;
      property Scale: Single read FScale write SetScale;
@@ -276,6 +284,9 @@ type
      property ColliderType: TColliderType read FColliderType write FColliderType default ctBox;
      property SphereColliderSize: Single read FSphereColliderSize write FSphereColliderSize default 1;
      property ShipType: TShipType read FShipType write FShipType;
+     property ShipStatus: TShipStatus read FShipStatus write FShipStatus;
+     property EnergyOfLife: Integer read FEnergyOfLife write FEnergyOfLife;
+
    end;
 
    { TImpulseLazer }
@@ -288,11 +299,16 @@ type
        FSpeed: Single;
        FShotMesh: TR3D_Mesh;
        FMaterial: TR3D_Material;
-     public
-       constructor Create(const AParent: TSpaceEngine; const StartPosition, Direction: TVector3;
-                         Speed, Damage: Single; ProjColor: TColorB); reintroduce;
+       FLazerTrasform: TMatrix;
+       FOwner: TSpaceActor; // Владелец снаряда
 
+     public
+       constructor Create(const AParent: TSpaceEngine; const OwnerActor: TSpaceActor;
+                         const StartPosition, Direction: TVector3;
+                         Speed, Damage: Single; ProjColor: TColorB); reintroduce;
+       property Owner: TSpaceActor read FOwner;
        procedure Update(const DeltaTime: Single); override;
+
        procedure Render; override;
        property LifeTime: Single read FLifeTime;
        property InitialPosition: TVector3 read FInitialPosition;
@@ -731,7 +747,7 @@ begin
   for i := 0 to FActorList.Count - 1 do
   begin
     if (TSpaceActor(FActorList.Items[i]).MaxSpeed = 0) or
-       (TSpaceActor(FActorList.Items[i]).ShipType = Station) then
+       (TSpaceActor(FActorList.Items[i]).ShipType = stPlanet) then
     begin
       TSpaceActor(FActorList.Items[i]).FixPosition;
     end;
@@ -752,7 +768,7 @@ begin
   for i := 0 to FActorList.Count - 1 do
   begin
     if (TSpaceActor(FActorList.Items[i]).MaxSpeed = 0) or
-       (TSpaceActor(FActorList.Items[i]).ShipType = Station) then
+       (TSpaceActor(FActorList.Items[i]).ShipType = stPlanet) then
     begin
       TSpaceActor(FActorList.Items[i]).FixPosition;
     end;
@@ -948,20 +964,43 @@ begin
   SetColliderTranslation(@self.FCollider, FPosition);
 end;
 
-// Установка масштаба с обновлением коллайдера
 procedure TSpaceActor.SetScale(AValue: Single);
+var
+  OldPosition: TVector3;
+  OldRotation: TQuaternion;
 begin
   if FScale = AValue then Exit;
+
+  // Сохраняем текущие трансформации
+  OldPosition := FPosition;
+  OldRotation := FVisualRotation;
+
   FScale := AValue;
-  // Пересоздание коллайдера при изменении масштаба
-  FCollider := CreateCollider(Vector3Scale(FModel.aabb.min, FScale),
-                              Vector3Scale(FModel.aabb.max, FScale));
+
+  // Безопасное пересоздание коллайдера
+  if Assigned(@FCollider) then
+  begin
+    case FColliderType of
+      ctBox:
+        FCollider := CreateCollider(Vector3Scale(FModel.aabb.min, FScale),
+                                    Vector3Scale(FModel.aabb.max, FScale));
+      ctSphere:
+        FCollider := CreateSphereCollider(Vector3Zero(), FSphereColliderSize * FScale);
+    end;
+
+    // Восстанавливаем трансформации
+    if Assigned(@FCollider) then
+    begin
+      SetColliderRotation(@FCollider, OldRotation);
+      SetColliderTranslation(@FCollider, OldPosition);
+    end;
+  end;
 end;
 
 // Создание актора с привязкой к движку
 constructor TSpaceActor.Create(const AParent: TSpaceEngine);
 begin
-
+  FActorCollison := True;
   FEngine := AParent;
   FIsDead := False;
   FVisible := True;
@@ -1013,13 +1052,17 @@ const
   MinImpactForce = 0.1;
   SpeedReductionFactor = 1.7;
 begin
+  // Пропускаем проверку столкновений, если у обоих акторов выключен ActorCollison
+  if (not Self.FActorCollison) or (not Other.FActorCollison) then
+    Exit;
+
   // Обновление позиции и вращения коллайдера
   SetColliderRotation(@FCollider, FVisualRotation);
   SetColliderTranslation(@FCollider, FPosition);
 
   // Проверяем, являются ли объекты статическими
-  IsThisStatic := (MaxSpeed = 0) or (ShipType = Station);
-  IsOtherStatic := (Other.MaxSpeed = 0) or (Other.ShipType = Station);
+  IsThisStatic := (MaxSpeed = 0) or (ShipType = stPlanet);
+  IsOtherStatic := (Other.MaxSpeed = 0) or (Other.ShipType = stPlanet);
 
   // Проверка столкновения коллайдеров
   if TestColliderPair(@FCollider, @Other.FCollider) then
@@ -1117,7 +1160,7 @@ end;
 procedure TSpaceActor.FixPosition;
 begin
   // Для статических объектов принудительно фиксируем позицию
-  if (MaxSpeed = 0) or (ShipType = Station) then
+  if (MaxSpeed = 0) or (ShipType = stPlanet) then
   begin
     // Сохраняем оригинальную позицию и восстанавливаем ее
     FOriginalPosition := FPosition;
@@ -1384,31 +1427,45 @@ begin
 end;
 
 { TImpulseLazer }
-
-constructor TImpulseLazer.Create(const AParent: TSpaceEngine; const StartPosition, Direction: TVector3;
-  Speed, Damage: Single; ProjColor: TColorB);
+constructor TImpulseLazer.Create(const AParent: TSpaceEngine; const OwnerActor: TSpaceActor;
+                                const StartPosition, Direction: TVector3;
+                                Speed, Damage: Single; ProjColor: TColorB);
 begin
   inherited Create(AParent);
 
+  FOwner := OwnerActor;
   FDirection := Vector3Normalize(Direction);
   FSpeed := Speed;
   Position := StartPosition;
   FInitialPosition := StartPosition;
-  Velocity := Vector3Scale(FDirection, FSpeed);
-  Scale := 0.3;
+  FVelocity := Vector3Scale(FDirection, FSpeed);
 
   DoCollision := True;
   MaxSpeed := FSpeed;
+  FScale := 1.0;
 
-  // Устанавливаем тип в зависимости от цвета
- { if (ProjColor.r = 255) and (ProjColor.g = 215) and (ProjColor.b = 0) then // GOLD
-    ShipType := Impulse
-  else if (ProjColor.r = 255) and (ProjColor.g = 0) and (ProjColor.b = 0) then // RED
-    ShipType := Pirate
-  else
-    ShipType := Unknow;
-   }
+  // СОЗДАЕМ МЕШ ЦИЛИНДРА - тонкий и длинный
+  FShotMesh := R3D_GenMeshCylinder(0.1, 3.0, 8, True); // радиус 0.1, высота 3.0, 8 сегментов
 
+  // Правильная инициализация модели
+  FModel.meshCount := 1;
+  FModel.meshes := @FShotMesh;
+  FModel.materialCount := 1;
+
+  FMaterial := R3D_GetDefaultMaterial();
+  FMaterial.emission.color := ProjColor;
+  FMaterial.emission.energy := 250.0; // Яркое свечение
+  FMaterial.albedo.color := BLACK;
+  FModel.materials := @FMaterial;
+
+  // Используем сферический коллайдер (проще для столкновений)
+  ColliderType := ctSphere;
+  FSphereColliderSize := 0.1;
+
+  // Создание коллайдера
+  FCollider := CreateSphereCollider(Vector3Zero(), FSphereColliderSize * FScale);
+  SetColliderRotation(@FCollider, FRotation);
+  SetColliderTranslation(@FCollider, FPosition);
 
   Tag := Round(Damage);
   Visible := True;
@@ -1419,68 +1476,75 @@ begin
   TurnResponse := 0;
   AlignToHorizon := False;
 
-  FShotMesh := R3D_GenMeshSphere(0.5, 8, 8, True);
- // FModel.meshes := @FShotMesh;
-  FMaterial := R3D_GetDefaultMaterial();
-  FMaterial.emission.color := ProjColor;
-  FMaterial.emission.energy := 160.0;
-  FMaterial.albedo.color := BLACK;
-  FModel.materials := @FMaterial;
-
-  ColliderType := ctBox;
-
-//  Self.FCollider.Radius:=1;
-
-  FCollider := CreateCollider(Vector3Scale(FShotMesh.aabb.min, FScale),
-                              Vector3Scale(FShotMesh.aabb.max, FScale));
+  // ПОВОРАЧИВАЕМ ЦИЛИНДР ВДОЛЬ НАПРАВЛЕНИЯ ДВИЖЕНИЯ
+  // Цилиндр по умолчанию ориентирован по оси Y,
+  // поэтому поворачиваем его вдоль направления выстрела
+  Rotation := QuaternionFromVector3ToVector3(Vector3Create(0, 1, 0), FDirection);
 end;
 
+
 procedure TImpulseLazer.Update(const DeltaTime: Single);
-var i: integer;
+var
+  i: integer;
+  OtherActor: TSpaceActor;
 begin
- inherited Update(DeltaTime);
+  FLifeTime += DeltaTime;
 
- // Проверяем столкновения и уничтожаем снаряд при попадании в статический объект
- for i := 0 to Engine.Count - 1 do
- begin
-   if (Engine.Items[i] <> Self) and TestColliderPair(@FCollider, @Engine.Items[i].FCollider) then
-   begin
-     if (Engine.Items[i].ShipType = Station) or (Engine.Items[i].MaxSpeed = 0) then
-     begin
-       Dead; // Уничтожаем снаряд при попадании в статический объект
-       Exit;
-     end;
-   end;
- end;
+  // Прямолинейное движение
+  FPosition := Vector3Add(Position, Vector3Scale(FDirection, FSpeed * DeltaTime));
 
-  // Переопределяем Update полностью для прямолинейного движения
-   FLifeTime += DeltaTime;
+  // Обновление коллайдера
+  SetColliderRotation(@FCollider, FRotation);
+  SetColliderTranslation(@FCollider, Position);
 
-   // Прямолинейное движение без физики родительского класса
-   Position := Vector3Add(Position, Vector3Scale(FDirection, FSpeed * DeltaTime));
+  // Проверка столкновений с ИСКЛЮЧЕНИЕМ владельца
+  for i := 0 to Engine.Count - 1 do
+  begin
+    OtherActor := Engine.Items[i];
 
-   // Обновление матрицы трансформации
-   FModelTransform := MatrixTranslate(Position.x, Position.y, Position.z);
-   FModelTransform := MatrixMultiply(QuaternionToMatrix(FRotation), FModelTransform);
-   FModelTransform := MatrixMultiply(MatrixScale(Scale, Scale, Scale), FModelTransform);
+    // Пропускаем себя, владельца и другие снаряды
+    if (OtherActor = Self) or (OtherActor = FOwner) or (OtherActor is TImpulseLazer) then
+      Continue;
 
-   // Обновление коллайдера
-   SetColliderRotation(@FCollider, FRotation);
-   SetColliderTranslation(@FCollider, Position);
+    if TestColliderPair(@FCollider, @OtherActor.FCollider) then
+    begin
+      // Наносим урон только если это не владелец
+      if OtherActor <> FOwner then
+      begin
+        OtherActor.OnCollision(Self); // Вызываем событие столкновения
+        Dead; // Уничтожаем снаряд после попадания
+        Exit;
+      end;
+    end;
+  end;
 
-   // Автоуничтожение через 5 секунд или по пройденной дистанции
-   if (FLifeTime > 5.0) or (Vector3Distance(FInitialPosition, Position) > 500.0) then
-   begin
-     Dead;
-   end;
+  // Автоуничтожение через время или расстояние
+  if (FLifeTime > 5.0) or (Vector3Distance(FInitialPosition, Position) > 300.0) then
+  begin
+    Dead;
+  end;
 end;
 
 procedure TImpulseLazer.Render;
 begin
-  //inherited Render;
+  if not FVisible then Exit;
 
-  R3D_DrawMesh(@FShotMesh, @FMaterial, FMOdelTransform);
+  // Матрица трансформации
+  FLazerTrasform := MatrixTranslate(Position.x, Position.y, Position.z);
+  FLazerTrasform := MatrixMultiply(QuaternionToMatrix(FRotation), FLazerTrasform);
+  FLazerTrasform := MatrixMultiply(MatrixScale(FScale, FScale, FScale), FLazerTrasform);
+
+  R3D_DrawMesh(@FShotMesh, @FMaterial, FLazerTrasform);
 end;
+
+{destructor TImpulseLazer.Destroy;
+begin
+  // Убираем из движка
+  if Assigned(FEngine) then
+    FEngine.Remove(Self);
+
+  inherited Destroy;
+end;}
 
 { TRadar }
 // Создание радара с привязкой к движку
@@ -1572,18 +1636,20 @@ end;
 // Измененная функция для получения цвета по типу корабля
 function TRadar.GetObjectColor(ShipType: TShipType): TColorB;
 begin
+//TShipType = (stUnknow, stPlanet, stShip_Bee, stShip_Flamingo, stShip_Forg, stShip_Panda, stObject_Jar, stObject_Sphere);  // Типы космических объектов/кораблей
+
   case ShipType of
-    Asteroid: Result := GRAY;
-    Police: Result := BLUE;
-    Station: Result := WHITE;
-    Neutral: Result := GREEN;
-    Pirate: Result := RED;
-    Missle: Result := ORANGE;
-    Beacon: Result := YELLOW;
-    Container: Result := ColorCreate(200, 200, 200, 255); // Светло-серый
-    Enemy: Result := ColorCreate(255, 0, 255, 255); // Пурпурный
+    stPlanet: Result := WHITE;
+    stShip_Bee: Result := YELLOW;
+    stShip_Flamingo: Result := PINK;
+    stShip_Forg: Result := GREEN;
+    stShip_Panda: Result := ORANGE;
+    stObject_Jar: Result := ColorCreate(200, 200, 200, 255); // Светло-серый
+    stObject_Sphere: Result := ColorCreate(255, 0, 255, 255); // Пурпурный
     else Result := FMarkerColor; // По умолчанию
   end;
+
+
 end;
 
 // Получение вектора "вперед" камеры
@@ -1743,7 +1809,7 @@ begin
   begin
     if TSpaceActor(FEngine.FActorList.Items[i]) = FPlayer then Continue;
 
-    if TSpaceActor(FEngine.FActorList.Items[i]).FShipType = Unknow then Continue;
+    if TSpaceActor(FEngine.FActorList.Items[i]).FShipType = stUnknow then Continue;
 
     modelPos := TSpaceActor(FEngine.FActorList.Items[i]).Position;
     relativePos := Vector3Subtract(FPlayer.Position, modelPos);
@@ -1751,6 +1817,9 @@ begin
 
     if distance > FMaxRange then Continue;
 
+
+    if TSpaceActor(FEngine.FActorList.Items[i]).ShipStatus = ssPirate then color := RED else
+    if TSpaceActor(FEngine.FActorList.Items[i]).ShipStatus = ss_Agresive then color := MAROON else
     color := GetObjectColor(TSpaceActor(FEngine.FActorList.Items[i]).ShipType);
 
     // Отрисовка на радаре

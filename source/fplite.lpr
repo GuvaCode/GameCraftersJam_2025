@@ -48,7 +48,8 @@ begin
     R3D_SetBloomIntensity(0.08);
     R3D_SetBloomMode(R3D_BLOOM_MIX);
     R3D_SetTonemapMode(R3D_TONEMAP_ACES);
-    R3D_SetModelImportScale(0.01);
+
+    R3D_SetModelImportScale(0.1);
 
 
   //light := R3D_CreateLight(R3D_LIGHT_DIR);
